@@ -1,12 +1,12 @@
 {-# LANGUAGE DeriveDataTypeable #-}
 module Database.Sophia
-  ( createEnv
+  ( withEnv
     , CreateEnvFailed(..), SetKeyComparisonFailed(..)
     , Env
 
   , IOMode(..), AllowCreation(..)
   , openDir , OpenDirFailed(..)
-  , openDb  , OpenDbFailed(..)
+  , withDb  , OpenDbFailed(..)
     , Db
   , hasValue, HasValueFailed(..)
   , getValue, GetValueFailed(..)
@@ -36,17 +36,11 @@ import Data.Typeable (Typeable)
 import Database.Sophia.Types
 import Foreign.C.String (withCString, peekCString)
 import Foreign.C.Types (CInt, CUInt, CSize(..), CChar)
-import Foreign.ForeignPtr (ForeignPtr, newForeignPtr, withForeignPtr)
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Ptr (Ptr, FunPtr, nullPtr, castPtr)
 import Foreign.Storable (peek)
 import qualified Bindings.Sophia as S
 import qualified Control.Exception as E
-
-foreign import ccall "sophia.h &sp_destroy"
-  -- we're forced to re-import sp_destroy_ptr just to ignore destroy's
-  -- error code here:
-   sp_destroy_ptr :: FunPtr (S.Handle -> IO ())
 
 throwErrorIf ::
   E.Exception exc => S.Handle -> (a -> Bool) -> (String -> exc) -> IO a -> IO a
@@ -71,7 +65,8 @@ throwErrorIfNull ::
   S.Handle -> (String -> exc) -> IO (Ptr a) -> IO (Ptr a)
 throwErrorIfNull h mkErr = throwErrorIf h (nullPtr ==) mkErr
 
-data CreateEnvFailed = CreateEnvFailed String deriving (Show, Typeable)
+-- Likely indicates a memory allocation failure:
+data CreateEnvFailed = CreateEnvFailed deriving (Show, Typeable)
 instance E.Exception CreateEnvFailed
 
 data SetKeyComparisonFailed = SetKeyComparisonFailed String deriving (Show, Typeable)
@@ -80,19 +75,17 @@ instance E.Exception SetKeyComparisonFailed
 foreign import ccall "lexical_cmp.h &sp_compare_lexicographically"
    sp_compare_lexicographically :: FunPtr (Ptr CChar -> CSize -> Ptr CChar -> CSize -> Ptr () -> IO CInt)
 
-destroyer :: (ForeignPtr () -> a) -> Ptr () -> IO a
-destroyer cons = fmap cons . newForeignPtr sp_destroy_ptr
-
-createEnv :: IO Env
-createEnv = do
-  envPtr <- S.c'sp_env
-  if envPtr == nullPtr
-    then -- can't use sp_error yet...
-      E.throwIO $ CreateEnvFailed "Sophia.createEnv failed (likely allocation failure)"
-    else do
-      throwErrorIfNotZero envPtr SetKeyComparisonFailed $
-        S.c'sp_set_key_comparison envPtr sp_compare_lexicographically nullPtr
-      destroyer Env envPtr
+withEnv :: (Env -> IO a) -> IO a
+withEnv = E.bracket mkEnv destroyEnv
+  where
+    mkEnv = do
+      envPtr <- S.c'sp_env
+      when (envPtr == nullPtr) $
+        E.throwIO $ CreateEnvFailed
+      throwErrorIfNotZero envPtr SetKeyComparisonFailed
+        (S.c'sp_set_key_comparison envPtr sp_compare_lexicographically nullPtr)
+      return $ Env envPtr
+    destroyEnv (Env cEnv) = S.c'sp_destroy cEnv
 
 data IOMode = ReadOnly | ReadWrite
 data AllowCreation = AllowCreation | DisallowCreation
@@ -105,18 +98,11 @@ allowCreationFlags :: AllowCreation -> S.Flags
 allowCreationFlags AllowCreation = S.c'SPO_CREAT
 allowCreationFlags DisallowCreation = 0
 
-withEnv :: Env -> (S.Env -> IO a) -> IO a
-withEnv = withForeignPtr . unEnv
-
-withDb :: Db -> (S.Db -> IO a) -> IO a
-withDb = withForeignPtr . unDb
-
 data OpenDirFailed = OpenDirFailed String deriving (Show, Typeable)
 instance E.Exception OpenDirFailed
 
 openDir :: Env -> IOMode -> AllowCreation -> FilePath -> IO ()
-openDir env ioMode allowCreation path =
-  withEnv env $ \cEnv ->
+openDir (Env cEnv) ioMode allowCreation path =
   withCString path $ \cPath ->
   throwErrorIfNotZero cEnv OpenDirFailed $ S.c'sp_dir cEnv flags cPath
   where
@@ -125,12 +111,12 @@ openDir env ioMode allowCreation path =
 data OpenDbFailed = OpenDbFailed String deriving (Show, Typeable)
 instance E.Exception OpenDbFailed
 
-openDb :: Env -> IO Db
-openDb env =
-  withEnv env $ \cEnv ->
-  do
-    dbPtr <- throwErrorIfNull cEnv OpenDbFailed $ S.c'sp_open cEnv
-    destroyer Db dbPtr
+withDb :: Env -> (Db -> IO a) -> IO a
+withDb (Env cEnv) =
+  E.bracket mkDb destroyDb
+  where
+    destroyDb (Db cDb) = S.c'sp_destroy cDb
+    mkDb = Db <$> throwErrorIfNull cEnv OpenDbFailed (S.c'sp_open cEnv)
 
 data HasValueFailed = HasValueFailed String deriving (Show, Typeable)
 instance E.Exception HasValueFailed
@@ -141,8 +127,7 @@ withByteString bs f =
   f (castPtr cKey, fromIntegral keyLen)
 
 hasValue :: Db -> ByteString -> IO Bool
-hasValue db key =
-  withDb db $ \cDb ->
+hasValue (Db cDb) key =
   withByteString key $ \(cKey, keyLen) ->
   do
     res <-
@@ -154,8 +139,7 @@ data GetValueFailed = GetValueFailed String deriving (Show, Typeable)
 instance E.Exception GetValueFailed
 
 getValue :: Db -> ByteString -> IO (Maybe ByteString)
-getValue db key =
-  withDb db $ \cDb ->
+getValue (Db cDb) key =
   withByteString key $ \(cKey, keyLen) ->
   alloca $ \cPtrPtr ->
   alloca $ \cLenPtr ->
@@ -174,8 +158,7 @@ data SetValueFailed = SetValueFailed String deriving (Show, Typeable)
 instance E.Exception SetValueFailed
 
 setValue :: Db -> ByteString -> ByteString -> IO ()
-setValue db key val =
-  withDb db $ \cDb ->
+setValue (Db cDb) key val =
   withByteString key $ \(cKey, keyLen) ->
   withByteString val $ \(cVal, valLen) ->
   throwErrorIfNotZero cDb SetValueFailed $
@@ -185,8 +168,7 @@ data DelValueFailed = DelValueFailed String deriving (Show, Typeable)
 instance E.Exception DelValueFailed
 
 delValue :: Db -> ByteString -> IO ()
-delValue db key =
-  withDb db $ \cDb ->
+delValue (Db cDb) key =
   withByteString key $ \(cKey, keyLen) ->
   throwErrorIfNotZero cDb DelValueFailed $
   S.c'sp_delete cDb cKey keyLen
@@ -203,9 +185,8 @@ cOrder GTE = S.c'SPGTE
 cOrder LTE = S.c'SPLTE
 
 withCursor :: Db -> Order -> ByteString -> (Cursor -> IO a) -> IO a
-withCursor db order key act =
+withCursor (Db cDb) order key act =
   withByteString key $ \(cKey, keyLen) ->
-  withDb db $ \cDb ->
   let
     mkCursor =
       fmap Cursor .

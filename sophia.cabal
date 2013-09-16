@@ -16,6 +16,9 @@ description:
 cabal-version: >= 1.10
 build-type:    Simple
 
+extra-source-files:
+  cbits/lexical_cmp.h
+
 --------------------------------------------------------------------------------
 
 library
@@ -69,4 +72,4 @@ test-suite main
 
 source-repository head
   type:     git
-  location: git://github.com/Peaker/sophia.git
+  location: https://github.com/Peaker/hssophia.git
