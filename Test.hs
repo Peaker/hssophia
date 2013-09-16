@@ -34,13 +34,14 @@ tests =
       putStrLn "Phase 3"
       S.setValue db "A" "foo"
       S.setValue db "Z" "bar"
-      cursor <- S.createCursorAt db S.GTE "A"
-      res <- S.fetchCursorAll cursor
-      res @?=
-        [ ("A", "foo")
-        , ("Key", "Val")
-        , ("Z", "bar")
-        ]
+
+      S.withCursor db S.GTE "A" $ \cursor -> do
+        res <- S.fetchCursorAll cursor
+        res @?=
+          [ ("A", "foo")
+          , ("Key", "Val")
+          , ("Z", "bar")
+          ]
 
       putStrLn "Phase 4"
       putStrLn "Deleting \"Key\""

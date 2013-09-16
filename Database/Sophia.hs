@@ -14,7 +14,7 @@ module Database.Sophia
   , delValue, DelValueFailed(..)
 
   , Order(..)
-  , createCursor, createCursorAt
+  , withCursor
     , CreateCursorFailed(..)
     , Cursor
 
@@ -111,9 +111,6 @@ withEnv = withForeignPtr . unEnv
 withDb :: Db -> (S.Db -> IO a) -> IO a
 withDb = withForeignPtr . unDb
 
-withCursor :: Cursor -> (S.Cursor -> IO a) -> IO a
-withCursor = withForeignPtr . unCursor
-
 data OpenDirFailed = OpenDirFailed String deriving (Show, Typeable)
 instance E.Exception OpenDirFailed
 
@@ -205,33 +202,29 @@ cOrder LT  = S.c'SPLT
 cOrder GTE = S.c'SPGTE
 cOrder LTE = S.c'SPLTE
 
-createCursorH :: S.Key -> CSize -> Db -> Order -> IO Cursor
-createCursorH cKey keyLen db order =
-  withDb db $ \cDb -> do
-    cursorPtr <-
+withCursor :: Db -> Order -> ByteString -> (Cursor -> IO a) -> IO a
+withCursor db order key act =
+  withByteString key $ \(cKey, keyLen) ->
+  withDb db $ \cDb ->
+  let
+    mkCursor =
+      fmap Cursor .
       throwErrorIfNull cDb CreateCursorFailed $
       S.c'sp_cursor cDb (cOrder order) cKey keyLen
-    destroyer Cursor cursorPtr
-
-createCursor :: Db -> Order -> IO Cursor
-createCursor = createCursorH nullPtr 0
-
-createCursorAt :: Db -> Order -> ByteString -> IO Cursor
-createCursorAt db order key =
-  withByteString key $ \(cKey, keyLen) ->
-  createCursorH cKey keyLen db order
+    delCursor (Cursor cursorPtr) =
+      S.c'sp_destroy cursorPtr
+  in E.bracket mkCursor delCursor act
 
 data FetchCursorFailed = FetchCursorFailed deriving (Show, Typeable)
 instance E.Exception FetchCursorFailed
 
 fetchCursor :: Cursor -> IO Bool
-fetchCursor cursor =
-  withCursor cursor $ \cCursor -> do
-    res <- S.c'sp_fetch cCursor
-    -- Docs say fetch can't fail, and it doesn't fill error str, but
-    -- it does return -1 in some cases (without err str)
-    when (res < 0) $ E.throwIO FetchCursorFailed
-    return (res /= 0)
+fetchCursor (Cursor cCursor) = do
+  res <- S.c'sp_fetch cCursor
+  -- Docs say fetch can't fail, and it doesn't fill error str, but
+  -- it does return -1 in some cases (without err str)
+  when (res < 0) $ E.throwIO FetchCursorFailed
+  return (res /= 0)
 
 data AtCursorFailed = AtCursorFailed deriving (Show, Typeable)
 instance E.Exception AtCursorFailed
@@ -240,16 +233,15 @@ atCursor ::
   (S.Cursor -> IO (Ptr ())) ->
   (S.Cursor -> IO CSize) ->
   Cursor -> IO ByteString
-atCursor cGetStr cGetLen cursor =
-  withCursor cursor $ \cCursor -> do
-    cKey <- cGetStr cCursor
-    keyLen <- cGetLen cCursor
-    when (nullPtr == cKey  ) $ E.throwIO AtCursorFailed
-    when (0       == keyLen) $ E.throwIO AtCursorFailed
-    -- Must use O(N) copy here? Not sure what the memory semantics of
-    -- sp_cursor/sp_fetch/sp_key/sp_destroy are, so for now the answer
-    -- is STAY SAFE:
-    packCStringLen (castPtr cKey, fromIntegral keyLen)
+atCursor cGetStr cGetLen (Cursor cCursor) = do
+  cKey <- cGetStr cCursor
+  keyLen <- cGetLen cCursor
+  when (nullPtr == cKey  ) $ E.throwIO AtCursorFailed
+  when (0       == keyLen) $ E.throwIO AtCursorFailed
+  -- Must use O(N) copy here? Not sure what the memory semantics of
+  -- sp_cursor/sp_fetch/sp_key/sp_destroy are, so for now the answer
+  -- is STAY SAFE:
+  packCStringLen (castPtr cKey, fromIntegral keyLen)
 
 keyAtCursor :: Cursor -> IO ByteString
 keyAtCursor = atCursor S.c'sp_key S.c'sp_keysize
