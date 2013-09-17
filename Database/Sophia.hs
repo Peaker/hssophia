@@ -31,12 +31,12 @@ import Control.Applicative (Applicative(..), (<$>))
 import Control.Monad (void, when)
 import Data.Bits ((.|.))
 import Data.ByteString (ByteString, packCStringLen)
-import Data.ByteString.Unsafe (unsafeUseAsCStringLen, unsafePackMallocCStringLen)
+import Data.ByteString.Unsafe (unsafeUseAsCStringLen)
 import Data.Typeable (Typeable)
 import Database.Sophia.Types
 import Foreign.C.String (withCString, peekCString)
 import Foreign.C.Types (CInt, CUInt, CSize(..), CChar)
-import Foreign.Marshal.Alloc (alloca)
+import Foreign.Marshal.Alloc (alloca, free)
 import Foreign.Ptr (Ptr, FunPtr, nullPtr, castPtr)
 import Foreign.Storable (peek)
 import qualified Bindings.Sophia as S
@@ -152,7 +152,7 @@ getValue (Db cDb) key =
       else Just <$> do
         cPtr <- peek cPtrPtr
         cLen <- peek cLenPtr
-        unsafePackMallocCStringLen (castPtr cPtr, fromIntegral cLen)
+        packCStringLen (castPtr cPtr, fromIntegral cLen) <* free cPtr
 
 data SetValueFailed = SetValueFailed String deriving (Show, Typeable)
 instance E.Exception SetValueFailed
