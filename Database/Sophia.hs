@@ -47,7 +47,7 @@ throwErrorIf ::
 throwErrorIf h isErr mkErr action = do
   res <- action
   if isErr res
-    then E.throwIO . mkErr =<< peekCString =<< S.c'sp_error h
+    then E.throwIO . mkErr =<< peekCString =<< S.unsafe'c'sp_error h
     else return res
 
 throwErrorIfNeg ::
@@ -79,13 +79,13 @@ withEnv :: (Env -> IO a) -> IO a
 withEnv = E.bracket mkEnv destroyEnv
   where
     mkEnv = do
-      envPtr <- S.c'sp_env
+      envPtr <- S.unsafe'c'sp_env
       when (envPtr == nullPtr) $
         E.throwIO $ CreateEnvFailed
       throwErrorIfNotZero envPtr SetKeyComparisonFailed
-        (S.c'sp_set_key_comparison envPtr sp_compare_lexicographically nullPtr)
+        (S.unsafe'c'sp_set_key_comparison envPtr sp_compare_lexicographically nullPtr)
       return $ Env envPtr
-    destroyEnv (Env cEnv) = S.c'sp_destroy cEnv
+    destroyEnv (Env cEnv) = S.unsafe'c'sp_destroy cEnv
 
 data IOMode = ReadOnly | ReadWrite
 data AllowCreation = AllowCreation | DisallowCreation
@@ -104,7 +104,7 @@ instance E.Exception OpenDirFailed
 openDir :: Env -> IOMode -> AllowCreation -> FilePath -> IO ()
 openDir (Env cEnv) ioMode allowCreation path =
   withCString path $ \cPath ->
-  throwErrorIfNotZero cEnv OpenDirFailed $ S.c'sp_dir cEnv flags cPath
+  throwErrorIfNotZero cEnv OpenDirFailed $ S.unsafe'c'sp_dir cEnv flags cPath
   where
     flags = ioModeFlags ioMode .|. allowCreationFlags allowCreation
 
@@ -115,8 +115,8 @@ withDb :: Env -> (Db -> IO a) -> IO a
 withDb (Env cEnv) =
   E.bracket mkDb destroyDb
   where
-    destroyDb (Db cDb) = S.c'sp_destroy cDb
-    mkDb = Db <$> throwErrorIfNull cEnv OpenDbFailed (S.c'sp_open cEnv)
+    destroyDb (Db cDb) = S.unsafe'c'sp_destroy cDb
+    mkDb = Db <$> throwErrorIfNull cEnv OpenDbFailed (S.unsafe'c'sp_open cEnv)
 
 data HasValueFailed = HasValueFailed String deriving (Show, Typeable)
 instance E.Exception HasValueFailed
@@ -132,7 +132,7 @@ hasValue (Db cDb) key =
   do
     res <-
       throwErrorIfNeg cDb HasValueFailed $
-      S.c'sp_get cDb cKey keyLen nullPtr nullPtr
+      S.unsafe'c'sp_get cDb cKey keyLen nullPtr nullPtr
     return $ res /= 0
 
 data GetValueFailed = GetValueFailed String deriving (Show, Typeable)
@@ -146,7 +146,7 @@ getValue (Db cDb) key =
   do
     res <-
       throwErrorIfNeg cDb GetValueFailed $
-      S.c'sp_get cDb cKey  keyLen cPtrPtr cLenPtr
+      S.unsafe'c'sp_get cDb cKey  keyLen cPtrPtr cLenPtr
     if res == 0
       then return Nothing
       else Just <$> do
@@ -162,7 +162,7 @@ setValue (Db cDb) key val =
   withByteString key $ \(cKey, keyLen) ->
   withByteString val $ \(cVal, valLen) ->
   throwErrorIfNotZero cDb SetValueFailed $
-  S.c'sp_set cDb cKey keyLen cVal valLen
+  S.unsafe'c'sp_set cDb cKey keyLen cVal valLen
 
 data DelValueFailed = DelValueFailed String deriving (Show, Typeable)
 instance E.Exception DelValueFailed
@@ -171,7 +171,7 @@ delValue :: Db -> ByteString -> IO ()
 delValue (Db cDb) key =
   withByteString key $ \(cKey, keyLen) ->
   throwErrorIfNotZero cDb DelValueFailed $
-  S.c'sp_delete cDb cKey keyLen
+  S.unsafe'c'sp_delete cDb cKey keyLen
 
 data Order = GT | GTE | LT | LTE
 
@@ -191,9 +191,9 @@ withCursor (Db cDb) order key act =
     mkCursor =
       fmap Cursor .
       throwErrorIfNull cDb CreateCursorFailed $
-      S.c'sp_cursor cDb (cOrder order) cKey keyLen
+      S.unsafe'c'sp_cursor cDb (cOrder order) cKey keyLen
     delCursor (Cursor cursorPtr) =
-      S.c'sp_destroy cursorPtr
+      S.unsafe'c'sp_destroy cursorPtr
   in E.bracket mkCursor delCursor act
 
 data FetchCursorFailed = FetchCursorFailed deriving (Show, Typeable)
@@ -201,7 +201,7 @@ instance E.Exception FetchCursorFailed
 
 fetchCursor :: Cursor -> IO Bool
 fetchCursor (Cursor cCursor) = do
-  res <- S.c'sp_fetch cCursor
+  res <- S.unsafe'c'sp_fetch cCursor
   -- Docs say fetch can't fail, and it doesn't fill error str, but
   -- it does return -1 in some cases (without err str)
   when (res < 0) $ E.throwIO FetchCursorFailed
@@ -225,10 +225,10 @@ atCursor cGetStr cGetLen (Cursor cCursor) = do
   packCStringLen (castPtr cKey, fromIntegral keyLen)
 
 keyAtCursor :: Cursor -> IO ByteString
-keyAtCursor = atCursor S.c'sp_key S.c'sp_keysize
+keyAtCursor = atCursor S.unsafe'c'sp_key S.unsafe'c'sp_keysize
 
 valAtCursor :: Cursor -> IO ByteString
-valAtCursor = atCursor S.c'sp_value S.c'sp_valuesize
+valAtCursor = atCursor S.unsafe'c'sp_value S.unsafe'c'sp_valuesize
 
 fetchCursorAll :: Cursor -> IO [(ByteString, ByteString)]
 fetchCursorAll cursor = do

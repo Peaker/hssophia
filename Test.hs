@@ -1,4 +1,5 @@
 {-# LANGUAGE OverloadedStrings #-}
+import Control.Exception (catch, SomeException(..))
 import Test.Tasty.HUnit ((@?=))
 import qualified Database.Sophia as S
 import qualified System.Directory as Dir
@@ -8,11 +9,14 @@ import qualified Test.Tasty.HUnit as TUnit
 main :: IO ()
 main = T.defaultMain tests
 
+ignoreExceptions :: IO () -> IO ()
+ignoreExceptions act = act `catch` \(SomeException _) -> return ()
+
 tests :: T.TestTree
 tests =
   T.testGroup "Unit tests"
   [ TUnit.testCase "Create DB, call some APIs" $ do
-      Dir.removeDirectoryRecursive "/tmp/sophia-test-db"
+      ignoreExceptions $ Dir.removeDirectoryRecursive "/tmp/sophia-test-db"
 
       putStrLn "Phase 1"
       S.withEnv $ \env -> do
